@@ -1,0 +1,84 @@
+"""Mock EIP 数据：结构与 2026-11-12 录屏所见一致，编号全部脱敏合成。
+
+trial1 合格（全规则通过）；trial2 局放超限+平台只维持6s；
+trial3 缺耐压试验步骤且电压未升上去。
+"""
+from datetime import datetime, timedelta
+
+GOOD_STEPS = [
+    ("2025-08-19 19:10:51", "试验采集开始"),
+    ("2025-08-19 19:10:54", "开始采集局放背景值（请准备完毕后点击采集背景值按钮）"),
+    ("2025-08-19 19:10:56", "局放背景值采集完成"),
+    ("2025-08-19 19:10:59", "开始进行局放试验请升压到2倍U0-52kV"),
+    ("2025-08-19 19:11:19", "当前电压已达到52kV请维持10秒"),
+    ("2025-08-19 19:11:29", "当前电压已维持10秒请降压到1.73倍U0-44.98kV"),
+    ("2025-08-19 19:11:34", "当前电压已降至44.98kV请点击采集局放值按钮"),
+    ("2025-08-19 19:12:11", "局放值采集完成"),
+    ("2025-08-19 19:12:14", "开始进行耐压试验请升压到4.5倍U0-117kV"),
+    ("2025-08-19 19:14:12", "试验状态：完成"),
+]
+
+GOOD_CURVE = [
+    ("2025-08-19 19:11:00", 26.0, 3.08), ("2025-08-19 19:11:05", 38.5, 3.08),
+    ("2025-08-19 19:11:10", 46.2, 3.09), ("2025-08-19 19:11:16", 50.83, 3.08),
+    ("2025-08-19 19:11:20", 52.0, 3.08), ("2025-08-19 19:11:23", 52.0, 3.09),
+    ("2025-08-19 19:11:26", 51.9, 3.08), ("2025-08-19 19:11:29", 52.0, 3.08),
+    ("2025-08-19 19:11:34", 44.98, 3.07), ("2025-08-19 19:11:50", 44.98, 3.08),
+    ("2025-08-19 19:13:00", 80.0, 3.10), ("2025-08-19 19:13:40", 100.2, 3.12),
+    ("2025-08-19 19:14:00", 116.7, 3.15),
+]
+
+
+def _curve(points, start="2025-09-10 10:00:00", step_s=3):
+    base = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+    return [
+        ((base + timedelta(seconds=step_s * i)).strftime("%Y-%m-%d %H:%M:%S"), kv, pc)
+        for i, (kv, pc) in enumerate(points)
+    ]
+
+
+# trial2：步骤链完整，但平台只维持 6 秒（3点×3s），稳态局放 30pC 超限
+BAD_PD_STEPS = list(GOOD_STEPS)
+BAD_PD_CURVE = _curve([
+    (26.0, 3.05), (40.0, 5.2), (48.0, 18.0), (52.0, 30.0),
+    (52.0, 31.0), (52.0, 29.5), (44.9, 30.0),
+    (80.0, 30.2), (100.1, 30.1), (116.7, 30.3),
+])
+
+# trial3：缺"开始进行耐压试验"步骤，电压也只到降压段为止
+NO_WITHSTAND_STEPS = [s for s in GOOD_STEPS if "耐压试验" not in s[1]]
+NO_WITHSTAND_CURVE = _curve([
+    (26.0, 3.10), (40.0, 3.12), (52.0, 3.15), (52.0, 3.16),
+    (52.0, 3.14), (52.0, 3.15), (52.0, 3.13), (52.0, 3.14), (52.0, 3.15),
+    (44.98, 3.12),
+], start="2025-09-12 14:00:00")
+
+WORKORDERS = [
+    {"workorderNo": "WO-2025-0001", "projectName": "某输变电工程A", "supplierName": "某电缆有限公司一",
+     "materialName": "26/35kV 交联聚乙烯绝缘电力电缆", "planDeliveryDate": "2025-09-30",
+     "progress": "出厂试验完成", "alarmDetail": "", "detailUrl": "/trial/20250819-XX1"},
+    {"workorderNo": "WO-2025-0002", "projectName": "某输变电工程B", "supplierName": "某电缆有限公司二",
+     "materialName": "26/35kV 交联聚乙烯绝缘电力电缆", "planDeliveryDate": "2025-10-15",
+     "progress": "出厂试验完成", "alarmDetail": "局放告警", "detailUrl": "/trial/20250910-XX2"},
+    {"workorderNo": "WO-2025-0003", "projectName": "某输变电工程C", "supplierName": "某电缆有限公司三",
+     "materialName": "26/35kV 交联聚乙烯绝缘电力电缆", "planDeliveryDate": "2025-10-20",
+     "progress": "出厂试验完成", "alarmDetail": "", "detailUrl": "/trial/20250912-XX3"},
+]
+
+TRIALS = {
+    "20250819-XX1": {
+        "productNo": "20250819-XX1#", "testNo": "TEST-20250819-001",
+        "voltageClass": "26/35", "voltageClassType": "交流", "testStatus": "完成",
+        "steps": GOOD_STEPS, "curve": GOOD_CURVE,
+    },
+    "20250910-XX2": {
+        "productNo": "20250910-XX2#", "testNo": "TEST-20250910-002",
+        "voltageClass": "26/35", "voltageClassType": "交流", "testStatus": "完成",
+        "steps": BAD_PD_STEPS, "curve": BAD_PD_CURVE,
+    },
+    "20250912-XX3": {
+        "productNo": "20250912-XX3#", "testNo": "TEST-20250912-003",
+        "voltageClass": "26/35", "voltageClassType": "交流", "testStatus": "完成",
+        "steps": NO_WITHSTAND_STEPS, "curve": NO_WITHSTAND_CURVE,
+    },
+}

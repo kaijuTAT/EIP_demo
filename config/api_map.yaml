@@ -1,0 +1,49 @@
+# EIP 接口适配配置（T1 通道）
+#
+# 现在填的是本地 Mock EIP 的端点，用于开发与集成测试。
+# D2 流量验证（run_probe.py）拿到真实 EIP 端点后，只改本文件的
+# url_pattern 和字段映射，采集代码一行不用动。
+#
+# 字段映射语法（极简 JSON 路径）："$.data.productNo"、"$.[0].name"
+
+version: "mock-2026-11-13.1"
+
+endpoints:
+  workorders:                     # 生产试验列表
+    url_pattern: "/api/workorders"
+    parser: workorder_list
+    items_path: "$.data.list"
+    fields:
+      workorder_no: "$.workorderNo"
+      project: "$.projectName"
+      supplier: "$.supplierName"
+      material: "$.materialName"
+      plan_delivery_date: "$.planDeliveryDate"
+      progress: "$.progress"
+      alarm_detail: "$.alarmDetail"
+      detail_url: "$.detailUrl"
+
+  trial_detail:                   # 试验感知详情（含步骤时间线）
+    url_pattern: "/api/trials/"
+    parser: trial_detail
+    exclude_pattern: "/curve"     # 曲线是独立端点
+    trial_key_from_url: "/api/trials/([^/\\?]+)"
+    fields:
+      product_no: "$.data.productNo"
+      test_no: "$.data.testNo"
+      voltage_class: "$.data.voltageClass"
+      voltage_class_type: "$.data.voltageClassType"
+      test_status: "$.data.testStatus"
+    steps:
+      items_path: "$.data.steps"
+      occurred_at: "$.time"
+      text: "$.text"
+
+  trial_curve:                    # 试验曲线点位
+    url_pattern: "/api/trials/.*/curve"
+    parser: trial_curve
+    trial_key_from_url: "/api/trials/([^/\\?]+)/curve"
+    items_path: "$.data.points"
+    ts: "$.t"
+    kv: "$.kv"
+    pc: "$.pc"

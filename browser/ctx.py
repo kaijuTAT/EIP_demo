@@ -13,9 +13,11 @@ PROFILE_DIR = Path(__file__).resolve().parents[1] / "evidence" / "browser_profil
 class BrowserSession:
     """同步版会话。with BrowserSession() as s: s.page.goto(...)"""
 
-    def __init__(self, headless: bool = False, record_video: bool = False):
+    def __init__(self, headless: bool = False, record_video: bool = False,
+                 profile_dir: Path = None):
         self.headless = headless
         self.record_video = record_video
+        self.profile_dir = profile_dir or PROFILE_DIR
         self._pw = None
         self.context = None
         self.page = None
@@ -23,7 +25,7 @@ class BrowserSession:
     def __enter__(self):
         self._pw = sync_playwright().start()
         kwargs = dict(
-            user_data_dir=str(PROFILE_DIR),
+            user_data_dir=str(self.profile_dir),
             headless=self.headless,
             viewport={"width": 1600, "height": 900},
         )

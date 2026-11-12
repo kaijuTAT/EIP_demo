@@ -86,6 +86,31 @@ def create_task(conn, type_: str, params: dict, note: str = "") -> int:
     return cur.lastrowid
 
 
+def insert_workorder(conn, task_id: int, rec: dict, source_url: str = "") -> int:
+    cur = conn.execute(
+        """INSERT INTO workorder(task_id, workorder_no, project, supplier, material,
+           plan_delivery_date, progress, alarm_detail, source_url, captured_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (task_id, rec.get("workorder_no"), rec.get("project"), rec.get("supplier"),
+         rec.get("material"), rec.get("plan_delivery_date"), rec.get("progress"),
+         rec.get("alarm_detail"), source_url, now()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def insert_anomaly(conn, trial_id: int, result: dict, evidence_path: str = "") -> int:
+    cur = conn.execute(
+        """INSERT INTO anomaly(trial_id, rule_id, rule_name, severity, ok,
+           detail_json, evidence_path, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+        (trial_id, result["rule_id"], result["rule_name"], result["severity"],
+         1 if result["ok"] else 0,
+         json.dumps(result["detail"], ensure_ascii=False), evidence_path, now()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
 def insert_trial_with_steps_and_curve(
     conn, task_id: int, trial: dict, steps: list, curve: list
 ) -> int:

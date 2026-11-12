@@ -20,6 +20,7 @@ class ResponseSink:
         self.manifest_path = self.out_dir / "manifest.jsonl"
         self.url_patterns = [re.compile(p) for p in (url_patterns or [".*"])]
         self.count = 0
+        self.errors = []  # 事件回调里的异常记录（不再静默吞掉）
 
     def match(self, url: str) -> bool:
         return any(p.search(url) for p in self.url_patterns)
@@ -52,8 +53,10 @@ class ResponseSink:
         return keys
 
 
-def attach(page, sink: ResponseSink):
-    """挂到 Playwright page 上。返回 detach()。"""
+def attach(page, sink: ResponseSink, on_body=None):
+    """挂到 Playwright page 上。on_body(url, status, body_bytes) 可选实时回调
+    （注意：事件时序不保证，离线重放 replay_manifest 才是可靠解析路径）。
+    返回 detach()。"""
 
     def on_response(resp):
         try:
@@ -62,10 +65,16 @@ def attach(page, sink: ResponseSink):
                 return
             if not sink.match(resp.url):
                 return
-            sink.save(resp.url, resp.status, resp.body())
-        except Exception:
-            # 单条响应失败不影响采集
-            pass
+            body = resp.body()
+            sink.save(resp.url, resp.status, body)
+            if on_body:
+                try:
+                    on_body(resp.url, resp.status, body)
+                except Exception as e:  # 回调失败不影响落盘；重放阶段会补
+                    sink.errors.append(f"on_body {resp.url}: {e!r}")
+        except Exception as e:
+            # 单条响应失败不影响采集，但要留痕
+            sink.errors.append(f"response {resp.url}: {e!r}")
 
     page.on("response", on_response)
 

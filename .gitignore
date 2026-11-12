@@ -8,10 +8,7 @@ __pycache__/
 *.db
 reports/out/
 
-# 证据与浏览器登录态（可能含内网页面截图，严禁推公网）
-evidence/browser_profile/
-evidence/videos/
-evidence/probe_*/
-evidence/*/page/
-evidence/*/curve/
-evidence/*/raw/
+# 证据目录整体不入库：截图/录屏/原始JSON/浏览器profile 均可能含内网页面数据
+# （严禁推公网；.gitkeep 保留目录结构）
+evidence/*
+!evidence/.gitkeep
