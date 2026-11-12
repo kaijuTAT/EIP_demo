@@ -1,0 +1,54 @@
+# 页面模板：每类页面的字段定位器。selector 为空 = 待 D2 流量验证后回填。
+# 回填原则：优先 data-testid/文本定位，最后才是 CSS class（改版易碎）。
+# 页面结构变化导致定位失败时，采集应暂停转人工，不写脏数据。
+
+trial_detail:                     # 智能监造 → 试验感知详情（成盘局放耐压试验）
+  url_pattern: "trialSenseDetail" # TODO(D2): 按实际 URL 回填
+  fields:
+    product_no:                   # 成品编号，如 20250819-4#
+      selector: ""                # TODO(D2)
+      attr: text
+    test_no:                      # 试验编号
+      selector: ""
+      attr: text
+    voltage_class_type:           # 成品电压等级类型，如 交流
+      selector: ""
+      attr: text
+    voltage_class:                # 电压等级，如 26/35
+      selector: ""
+      attr: text
+    test_status:                  # 试验状态，如 完成
+      selector: ""
+      attr: text
+  steps:                          # 试验步骤时间线（多行，含时间戳）
+    selector: ""                  # TODO(D2)
+    timestamp_in_text: true       # 时间戳与步骤文案同格，OCR/DOM 均为 "YYYY-MM-DDHH:MM:SS 步骤文案"
+  curve:
+    container: ""                 # TODO(D2): 曲线容器（canvas 或 echarts div）
+    tooltip: ""                   # TODO(D2): 悬浮框，实测显示 时间 + KV:xx + pC:xx
+    plot_area:                    # hover 采样的坐标范围（D2 实测后回填）
+      x0: 0
+      x1: 0
+      y: 0
+
+workorder_list:                   # 生产试验列表页
+  url_pattern: ""                 # TODO(D2)
+  rows: ""                        # TODO(D2): 行选择器
+  columns:                        # 列名 -> 行内字段定位（按列头文本或索引）
+    project: ""
+    supplier: ""
+    workorder_no: ""
+    material: ""
+    plan_delivery_date: ""
+    progress: ""
+    alarm_detail: ""
+  pager:
+    next_button: ""               # TODO(D2)
+    max_pages: 200                # 安全上限，防失控翻页
+  rate_limit_seconds: 2           # 翻页间隔（纪律红线）
+
+ocr:
+  # 悬浮框常见格式（实测）："2025-08-1919:11:16  KV:50.83  pC:3.08"
+  kv_patterns: ["KV:", "kV:", "KV-", "kV-"]
+  pc_patterns: ["pC:", "PC:", "pC-", "PC-"]
+  timestamp_pattern: "\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}\\s*\\d{1,2}:\\d{2}(:\\d{2})?"

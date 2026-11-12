@@ -1,0 +1,16 @@
+# 核心（本机均已安装，目标机器按此清单安装）
+playwright>=1.40          # 浏览器控制（主通道）  https://github.com/microsoft/playwright-python
+rapidocr-onnxruntime      # OCR 兜底（Paddle 模型离线版，装不上 paddlepaddle 时的等价退路）
+pyautogui                 # 真鼠标兜底           https://github.com/asweigart/pyautogui
+mss                       # 桌面截屏（配合 pyautogui）
+flask                     # 本地管理界面（只绑 127.0.0.1）
+openpyxl                  # Excel 报表
+pandas                    # 数据整理
+PyYAML                    # 配置文件
+
+# PaddleOCR 官方版（Python 3.10~3.12 推荐；装不上用上面的 rapidocr 退路）
+# paddlepaddle
+# paddleocr               # https://github.com/PaddlePaddle/PaddleOCR
+
+# 可选
+# ffmpeg                  # 裁剪异常前后录屏片段

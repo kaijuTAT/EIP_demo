@@ -1,0 +1,77 @@
+# 异常规则参数（业务可改；改完把 version 加一位）
+version: "2026-11-13.1"
+
+# 按电压等级的试验参数。U0 与倍率来自 EIP 步骤文案实测：
+# 26/35kV 交流：2U0=52kV 维持10s → 1.73U0=44.98kV → 耐压 4.5U0=117kV
+voltage_classes:
+  "26/35":
+    u0: 26.0
+    mult_pd: 2.0        # 局放试验升压倍率
+    mult_hold: 1.73     # 维持后降压倍率
+    mult_withstand: 4.5 # 耐压试验倍率
+    hold_seconds: 10    # 平台维持时长
+  "6/10":
+    u0: 8.7
+    mult_pd: 2.0
+    mult_hold: 1.73
+    mult_withstand: 4.5
+    hold_seconds: 10
+
+# 步骤链必须按顺序出现的关键词（对 OCR 噪声做去空格归一化后匹配）
+step_chain_keywords:
+  - 试验采集开始
+  - 局放背景值采集完成
+  - 开始进行局放试验
+  - 52            # 2U0 出现在步骤文案中
+  - 维持10秒
+  - 降压
+  - 采集局放值
+  - 局放值采集完成
+  - 开始进行耐压试验
+  - 完成
+
+rules:
+  R-PD-01:
+    name: 步骤链完整性
+    severity: high
+    enabled: true
+  R-PD-02:
+    name: 局放升压目标偏差
+    severity: high
+    enabled: true
+    tolerance: 0.02        # 实测峰值相对 2U0 的容差
+  R-PD-03:
+    name: 平台维持时间不足
+    severity: high
+    enabled: true
+    tolerance: 0.05        # 判定"在平台上"的电压容差
+  R-PD-04:
+    name: 降压目标偏差
+    severity: medium
+    enabled: true
+    tolerance: 0.02
+  R-PD-05:
+    name: 耐压目标未达成
+    severity: high
+    enabled: true
+    tolerance: 0.02
+  R-PD-06:
+    name: 局放量超限
+    severity: high
+    enabled: true
+    pc_limit: 10.0         # 稳态局放上限 pC（按品类/标准配置，需业务确认）
+  R-PD-07:
+    name: 背景值异常
+    severity: medium
+    enabled: true
+    pc_limit: 10.0         # 背景噪声底上限；稳态明显低于背景也判可疑
+  R-PD-08:
+    name: 曲线形态异常
+    severity: medium
+    enabled: true
+    stuck_max_points: 3    # 连续完全相同读数点数上限（数据死点）
+    gap_seconds: 180       # 相邻采样点最大时间间隔（局放段→耐压段切换有天然间隔）
+  R-TS-01:
+    name: 数据上传时效
+    severity: medium
+    enabled: false         # 待物资收货数据接入后启用

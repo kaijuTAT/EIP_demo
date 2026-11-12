@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# 本地数据与生成物（含演示/试跑数据，不入库）
+*.db
+reports/out/
+
+# 证据与浏览器登录态（可能含内网页面截图，严禁推公网）
+evidence/browser_profile/
+evidence/videos/
+evidence/probe_*/
+evidence/*/page/
+evidence/*/curve/
+evidence/*/raw/
