@@ -57,10 +57,11 @@ CURVE_BAD = [
 ]
 
 
-def main():
+def run_demo(task_id=None):
     root = Path(__file__).resolve().parent
     conn = connect(root / "eip_agent.db")
-    task_id = create_task(conn, "rules_run", {"demo": True}, note="录屏样本回归演示")
+    if task_id is None:
+        task_id = create_task(conn, "rules_run", {"demo": True}, note="录屏样本回归演示")
 
     trials = []
     for trial, steps, curve in ((TRIAL_GOOD, STEPS_GOOD, CURVE_GOOD),
@@ -86,6 +87,12 @@ def main():
     html = write_anomaly_html(rows, out / "异常报表_样例.html")
     print(f"\n报表已生成：\n  {xlsx}\n  {html}")
     conn.close()
+    return {"trials": len(trials), "anomalies": sum(1 for row in rows if not row["ok"]),
+            "excel": str(xlsx), "html": str(html)}
+
+
+def main():
+    run_demo()
 
 
 if __name__ == "__main__":

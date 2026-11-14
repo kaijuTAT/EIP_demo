@@ -6,11 +6,13 @@
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin
 
 from browser.adapter import ApiAdapter
 from browser.ctx import BrowserSession
 from browser.intercept import ResponseSink, attach
 from reports.excel_report import write_anomaly_excel
+from reports.evidence import collect_evidence_files
 from reports.html_report import write_anomaly_html
 from rules.engine import run_all
 from storage.db import (connect, create_task, insert_anomaly,
@@ -19,21 +21,31 @@ from storage.db import (connect, create_task, insert_anomaly,
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _safe_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
+
+
 def collect(base_url: str, limit: int = None, headless: bool = True,
-            page_wait_ms: int = 1200, task_note: str = "") -> dict:
+            page_wait_ms: int = 1200, task_note: str = "", task_id: int = None,
+            entry_url: str = None, profile_dir: Path = None) -> dict:
     """返回摘要 {workorders, trials, anomalies, excel, html}。"""
     out_dir = ROOT / "evidence" / f"collect_{datetime.now():%Y%m%d_%H%M%S}"
     sink = ResponseSink(out_dir)
     adapter = ApiAdapter()
+    page_dir = out_dir / "page"
+    page_dir.mkdir(parents=True, exist_ok=True)
+    root_url = base_url.rstrip("/") + "/"
+    start_url = entry_url or root_url
 
     with BrowserSession(headless=headless, record_video=True,
-                        profile_dir=out_dir / "profile") as s:
+                        profile_dir=profile_dir, video_dir=out_dir / "video") as s:
         page = s.page
         detach = attach(page, sink)
 
-        # 1) 列表页：触发 /api/workorders
-        page.goto(base_url.rstrip("/") + "/", wait_until="networkidle")
+        # 1) 入口页：触发列表接口或等待人工登录后进入列表
+        page.goto(start_url, wait_until="networkidle")
         time.sleep(page_wait_ms / 1000)
+        page.screenshot(path=str(page_dir / "list.png"), full_page=False)
 
         # 2) 先重放列表接口，拿到详情页目标
         adapter.replay_manifest(out_dir / "manifest.jsonl")
@@ -42,9 +54,14 @@ def collect(base_url: str, limit: int = None, headless: bool = True,
             targets = targets[:limit]
 
         # 3) 逐个进入详情页：触发 /api/trials/<key> 与 /curve
-        for rel in targets:
-            page.goto(base_url.rstrip("/") + rel, wait_until="networkidle")
+        for index, rel in enumerate(targets, 1):
+            detail_url = urljoin(root_url, rel)
+            page.goto(detail_url, wait_until="networkidle")
             time.sleep(page_wait_ms / 1000)
+            page.screenshot(
+                path=str(page_dir / f"detail_{index:03d}_{_safe_name(rel)[:80]}.png"),
+                full_page=False,
+            )
         detach()
 
     # 4) 全部落盘后统一重放解析（确定性路径，不受事件时序影响）
@@ -52,11 +69,15 @@ def collect(base_url: str, limit: int = None, headless: bool = True,
 
     # 3) 入库 + 规则 + 报表
     conn = connect(ROOT / "eip_agent.db")
-    task_id = create_task(conn, "collect", {"base_url": base_url},
-                          note=task_note or f"T1采集 {base_url}")
+    if task_id is None:
+        task_id = create_task(
+            conn, "collect", {"base_url": base_url, "entry_url": entry_url},
+            note=task_note or f"T1采集 {base_url}",
+        )
     for w in adapter.staged_workorders:
         insert_workorder(conn, task_id, w)
 
+    evidence_files = collect_evidence_files(out_dir)
     rows, n_anomaly = [], 0
     for key, slot in adapter.complete_trials():
         trial, steps, curve = slot["trial"], slot["steps"], slot["curve"]
@@ -67,7 +88,9 @@ def collect(base_url: str, limit: int = None, headless: bool = True,
         for r in run_all(trial, steps, curve):
             insert_anomaly(conn, trial_id, r, evidence_path=str(out_dir))
             rows.append({"trial_id": trial_id, "ok": r["ok"], "detail": r["detail"],
-                         "review_status": "待复核", **trial, **r})
+                         "review_status": "待复核", "evidence": str(out_dir),
+                         "evidence_items": [str(p) for p in evidence_files],
+                         **trial, **r})
             n_anomaly += 0 if r["ok"] else 1
     conn.close()
 

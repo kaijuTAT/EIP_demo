@@ -1,83 +1,237 @@
-"""本地管理界面。只监听 127.0.0.1（数据不出网红线）。
+"""本地管理界面和单机任务队列。
 
-启动：python -m app.main    →  http://127.0.0.1:8765
-功能：任务列表/新建、进度查看、报表下载（试点版最小界面）。
+启动：python -m app.main
+默认监听 127.0.0.1:8765，不把任务、页面内容或证据发送到外部服务。
 """
-import sqlite3
-import webbrowser
+import json
+import threading
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import yaml
 from flask import Flask, jsonify, redirect, render_template_string, request, send_from_directory
 
-from storage.db import connect, create_task, now
+from browser.collect import collect
+from run_demo import run_demo
+from run_probe import run as run_probe
+from storage.db import connect, create_task, update_task
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT / "reports" / "out"
 EVIDENCE_DIR = ROOT / "evidence"
+PROFILE_DIR = EVIDENCE_DIR / "browser_profile"
+TARGETS_FILE = ROOT / "config" / "targets.yaml"
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
+EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="eip-agent")
+_MOCK_SERVER = None
+_MOCK_SERVER_LOCK = threading.Lock()
 
-PAGE = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>EIP 质控 Agent</title>
-<style>body{font-family:"Microsoft YaHei";margin:24px}table{border-collapse:collapse;width:100%}
-td,th{border:1px solid #ddd;padding:6px 10px;font-size:13px}th{background:#1F4E79;color:#fff}
-.tag{padding:1px 8px;border-radius:4px;background:#eee}.running{background:#e67e22;color:#fff}
-.done{background:#27ae60;color:#fff}.failed{background:#c0392b;color:#fff}
-form{margin:16px 0}select,input,button{margin-right:8px}</style></head><body>
-<h2>EIP 本地智能质控 Agent（127.0.0.1 专用）</h2>
+TYPE_NAMES = {"probe": "流量验证", "collect": "工单采集", "rules_run": "规则跑批"}
+
+PAGE = """<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="8"><title>EIP 质控 Agent</title>
+<style>
+body{font-family:"Microsoft YaHei";margin:24px;background:#f7f8fa;color:#222}
+h2{color:#1F4E79} .panel{background:#fff;border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:18px}
+table{border-collapse:collapse;width:100%;background:#fff}td,th{border:1px solid #ddd;padding:7px 9px;font-size:13px;vertical-align:top}
+th{background:#1F4E79;color:#fff}.tag{padding:2px 8px;border-radius:4px;background:#eee;white-space:nowrap}
+.running{background:#e67e22;color:#fff}.done{background:#27ae60;color:#fff}.failed{background:#c0392b;color:#fff}.pending{background:#8e9aa6;color:#fff}
+label{display:inline-block;margin:4px 12px 4px 0;font-size:13px}input,select,button{padding:5px 7px;margin-left:4px}
+button{background:#1F4E79;color:#fff;border:0;border-radius:4px;cursor:pointer}.muted{color:#666;font-size:12px}
+a{color:#1769aa}.result{max-width:420px;word-break:break-all}
+</style></head><body>
+<h2>EIP 本地智能质控 Agent</h2>
+<div class="panel">
 <form method="post" action="/tasks">
-  <select name="type"><option value="probe">流量验证</option>
-  <option value="collect">工单采集</option><option value="rules_run">规则跑批</option></select>
-  <input name="note" placeholder="备注（品类/日期范围）" size="30">
-  <button>新建任务</button></form>
-<table><tr><th>ID</th><th>类型</th><th>状态</th><th>备注</th><th>创建时间</th></tr>
-{% for t in tasks %}<tr><td>{{t.id}}</td><td>{{t.type}}</td>
-<td><span class="tag {{t.status}}">{{t.status}}</span></td>
-<td>{{t.note}}</td><td>{{t.created_at}}</td></tr>{% endfor %}</table>
-<p><a href="/reports">报表下载</a></p></body></html>"""
+  <label>任务<select name="type"><option value="collect">工单采集</option><option value="probe">流量验证</option><option value="rules_run">规则跑批</option></select></label>
+  <label>目标<select name="target">{% for key, target in targets.items() %}<option value="{{key}}">{{target.name}}</option>{% endfor %}</select></label>
+  <label>入口 URL<input name="entry_url" size="42" placeholder="留空使用目标配置"></label>
+  <label>基础 URL<input name="base_url" size="32" placeholder="真实 EIP 地址"></label>
+  <label>详情数<input name="limit" type="number" min="1" max="200" value="20" size="5"></label>
+  <label>探查分钟<input name="minutes" type="number" min="1" max="120" value="15" size="5"></label>
+  <label>浏览器<select name="headless"><option value="0">显示窗口，适合真实 EIP</option><option value="1">后台运行，适合 Mock</option></select></label>
+  <label>备注<input name="note" size="28" placeholder="品类/日期范围"></label>
+  <button type="submit">启动任务</button>
+</form>
+<div class="muted">真实 EIP 首次运行先人工登录。采集只读页面，不点击提交、采集和修改类按钮。</div>
+</div>
+<table><tr><th>ID</th><th>类型</th><th>状态</th><th>备注</th><th>创建时间</th><th>结果</th></tr>
+{% for t in tasks %}<tr><td>{{t.id}}</td><td>{{t.type_name}}</td>
+<td><span class="tag {{t.status}}">{{t.status}}</span></td><td>{{t.note}}</td><td>{{t.created_at}}</td>
+<td class="result">{{t.result_text}}</td></tr>{% endfor %}</table>
+<p><a href="/reports">查看本地报表</a>　<span class="muted">页面每 8 秒刷新一次</span></p>
+</body></html>"""
+
+
+def _load_targets() -> dict:
+    if not TARGETS_FILE.exists():
+        return {"mock": {"name": "本地 Mock", "base_url": "http://127.0.0.1:8777", "entry_url": ""}}
+    with TARGETS_FILE.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("targets", {})
+
+
+def _int_value(value, default):
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _ensure_mock_server(base_url: str) -> None:
+    """管理页选择 Mock 目标时自动启动本地仿真服务。"""
+    global _MOCK_SERVER
+    if base_url.rstrip("/") != "http://127.0.0.1:8777":
+        return
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/", timeout=0.3):
+            return
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+    with _MOCK_SERVER_LOCK:
+        if _MOCK_SERVER is not None:
+            return
+        from werkzeug.serving import make_server
+        from mock_eip.server import app as mock_app
+
+        _MOCK_SERVER = make_server("127.0.0.1", 8777, mock_app)
+        threading.Thread(target=_MOCK_SERVER.serve_forever,
+                         name="mock-eip", daemon=True).start()
+
+
+def _task_rows():
+    conn = connect()
+    rows = []
+    for row in conn.execute("SELECT * FROM task ORDER BY id DESC LIMIT 100"):
+        item = dict(row)
+        try:
+            params = json.loads(item.get("params_json") or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        result = params.get("result")
+        if result:
+            item["result_text"] = json.dumps(result, ensure_ascii=False)
+        elif params.get("error"):
+            item["result_text"] = "失败：" + str(params["error"])
+        else:
+            item["result_text"] = "等待执行" if item["status"] == "pending" else ""
+        item["type_name"] = TYPE_NAMES.get(item["type"], item["type"])
+        rows.append(item)
+    conn.close()
+    return rows
+
+
+def _run_task(task_id: int, task_type: str, params: dict, note: str):
+    conn = connect()
+    update_task(conn, task_id, "running")
+    conn.close()
+    try:
+        if task_type == "collect":
+            if params.get("target") == "mock":
+                _ensure_mock_server(params["base_url"])
+            summary = collect(
+                params["base_url"],
+                limit=params.get("limit"),
+                headless=params.get("headless", False),
+                task_note=note,
+                task_id=task_id,
+                entry_url=params.get("entry_url") or None,
+                profile_dir=PROFILE_DIR,
+            )
+            result = {
+                key: summary.get(key)
+                for key in ("workorders", "trials", "anomalies", "excel", "html", "evidence")
+            }
+            result["unmatched"] = summary.get("unmatched", [])
+            result["intercept_errors"] = summary.get("intercept_errors", [])
+        elif task_type == "probe":
+            out_dir = run_probe(
+                minutes=params.get("minutes", 15),
+                start_url=params.get("entry_url") or params.get("base_url") or None,
+                profile_dir=PROFILE_DIR,
+            )
+            result = {"evidence": str(out_dir)}
+        elif task_type == "rules_run":
+            result = run_demo(task_id=task_id)
+        else:
+            raise ValueError(f"不支持的任务类型：{task_type}")
+        conn = connect()
+        update_task(conn, task_id, "done", result=result)
+        conn.close()
+    except Exception as exc:
+        conn = connect()
+        update_task(conn, task_id, "failed", error=f"{type(exc).__name__}: {exc}")
+        conn.close()
 
 
 @app.route("/")
 def index():
-    conn = connect()
-    rows = conn.execute("SELECT * FROM task ORDER BY id DESC LIMIT 100").fetchall()
-    conn.close()
-    return render_template_string(PAGE, tasks=rows)
+    return render_template_string(PAGE, tasks=_task_rows(), targets=_load_targets())
 
 
 @app.route("/tasks", methods=["POST"])
 def new_task():
+    targets = _load_targets()
+    task_type = request.form.get("type", "collect")
+    target_key = request.form.get("target", "mock")
+    target = targets.get(target_key, {})
+    base_url = (request.form.get("base_url") or target.get("base_url") or "").strip()
+    entry_url = (request.form.get("entry_url") or target.get("entry_url") or "").strip()
+    if not base_url and task_type == "collect":
+        return "请填写基础 URL 或在 config/targets.yaml 配置目标", 400
+    params = {
+        "target": target_key,
+        "base_url": base_url,
+        "entry_url": entry_url,
+        "limit": _int_value(request.form.get("limit"), 20),
+        "minutes": _int_value(request.form.get("minutes"), 15),
+        "headless": request.form.get("headless", "0") == "1",
+    }
+    note = request.form.get("note", "").strip()
     conn = connect()
-    create_task(conn, request.form.get("type", "probe"), {},
-                note=request.form.get("note", ""))
+    task_id = create_task(conn, task_type, params, note=note)
     conn.close()
+    EXECUTOR.submit(_run_task, task_id, task_type, params, note)
     return redirect("/")
 
 
 @app.route("/reports")
 def reports():
-    files = sorted(REPORTS_DIR.glob("*.xlsx")) + sorted(REPORTS_DIR.glob("*.html")) \
-        if REPORTS_DIR.exists() else []
-    links = "<br>".join(f'<a href="/reports/{f.name}">{f.name}</a>' for f in files) or "暂无报表"
-    return f"<h3>报表</h3><p>{links}</p><p><a href='/'>返回</a></p>"
+    files = []
+    if REPORTS_DIR.exists():
+        files = sorted(REPORTS_DIR.glob("*.xlsx")) + sorted(REPORTS_DIR.glob("*.html"))
+    links = "<br>".join(
+        f'<a target="_blank" href="/reports/{f.name}">{f.name}</a>' for f in files
+    ) or "暂无报表"
+    return f"<h3>本地报表</h3><p>{links}</p><p><a href='/'>返回任务页</a></p>"
 
 
 @app.route("/reports/<path:name>")
 def report_file(name):
-    return send_from_directory(REPORTS_DIR, name, as_attachment=True)
+    suffix = Path(name).suffix.lower()
+    return send_from_directory(REPORTS_DIR, name, as_attachment=suffix not in {".html", ".htm"})
+
+
+@app.route("/evidence/<path:name>")
+def evidence_file(name):
+    return send_from_directory(EVIDENCE_DIR, name, as_attachment=False)
 
 
 @app.route("/api/tasks")
 def api_tasks():
-    conn = connect()
-    rows = [dict(r) for r in conn.execute("SELECT * FROM task ORDER BY id DESC LIMIT 100")]
-    conn.close()
-    return jsonify(rows)
+    return jsonify(_task_rows())
 
 
-def main(host="127.0.0.1", port=8765):
-    webbrowser.open(f"http://{host}:{port}")
-    app.run(host=host, port=port, debug=False)
+def main(host="127.0.0.1", port=8765, open_browser=True):
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f"http://{host}:{port}")
+    app.run(host=host, port=port, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

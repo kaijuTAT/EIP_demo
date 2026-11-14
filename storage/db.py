@@ -86,6 +86,29 @@ def create_task(conn, type_: str, params: dict, note: str = "") -> int:
     return cur.lastrowid
 
 
+def update_task(conn, task_id: int, status: str, result: dict = None,
+                error: str = None) -> None:
+    """更新后台任务状态，并把小型结果摘要写回 params_json。"""
+    row = conn.execute(
+        "SELECT params_json FROM task WHERE id = ?", (task_id,)
+    ).fetchone()
+    if not row:
+        return
+    try:
+        params = json.loads(row["params_json"] or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    if result is not None:
+        params["result"] = result
+    if error:
+        params["error"] = error
+    conn.execute(
+        "UPDATE task SET status = ?, params_json = ? WHERE id = ?",
+        (status, json.dumps(params, ensure_ascii=False), task_id),
+    )
+    conn.commit()
+
+
 def insert_workorder(conn, task_id: int, rec: dict, source_url: str = "") -> int:
     cur = conn.execute(
         """INSERT INTO workorder(task_id, workorder_no, project, supplier, material,

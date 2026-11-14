@@ -13,11 +13,13 @@
 结论怎么下：看打印的"候选曲线接口"——
     出现 kv/pc/voltage/discharge/曲线 等关键词的大响应 → T1 接口通道可行
 """
-import sys
+import argparse
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 from browser.ctx import BrowserSession
 from browser.intercept import ResponseSink, attach
@@ -26,14 +28,16 @@ EVIDENCE_ROOT = Path(__file__).resolve().parent / "evidence"
 CURVE_HINTS = ("kv", "pc", "voltage", "discharge", "partial", "curve", "局放", "电压", "曲线")
 
 
-def run(minutes: float = None):
+def run(minutes: float = None, start_url: str = None, profile_dir: Path = None):
     out_dir = EVIDENCE_ROOT / f"probe_{datetime.now():%Y%m%d_%H%M%S}"
     sink = ResponseSink(out_dir)
     stop_flag = threading.Event()
 
-    with BrowserSession(headless=False) as s:
+    with BrowserSession(headless=False, profile_dir=profile_dir) as s:
         page = s.page
         detach = attach(page, sink)
+        if start_url:
+            page.goto(start_url, wait_until="domcontentloaded")
 
         def screenshot_loop():
             i = 0
@@ -66,6 +70,7 @@ def run(minutes: float = None):
             detach()
 
     summarize(out_dir, sink)
+    return out_dir
 
 
 def summarize(out_dir: Path, sink: ResponseSink):
@@ -95,7 +100,15 @@ def summarize(out_dir: Path, sink: ResponseSink):
 
 
 if __name__ == "__main__":
-    mins = None
-    if "--minutes" in sys.argv:
-        mins = float(sys.argv[sys.argv.index("--minutes") + 1])
-    run(mins)
+    parser = argparse.ArgumentParser(description="EIP D2 流量验证")
+    parser.add_argument("--target", default="", help="config/targets.yaml 中的目标名")
+    parser.add_argument("--start-url", default="", help="登录页或生产试验列表入口")
+    parser.add_argument("--minutes", type=float, default=None)
+    args = parser.parse_args()
+    target = {}
+    targets_file = Path(__file__).resolve().parent / "config" / "targets.yaml"
+    if args.target and targets_file.exists():
+        with targets_file.open(encoding="utf-8") as f:
+            target = (yaml.safe_load(f) or {}).get("targets", {}).get(args.target, {})
+    start_url = args.start_url or target.get("entry_url") or target.get("base_url") or None
+    run(args.minutes, start_url=start_url)

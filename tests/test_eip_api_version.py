@@ -74,6 +74,9 @@ def test_end_to_end_collect():
     assert xx3.get("R-PD-05") is False, "电压未达117kV未命中 R-PD-05"
 
     assert Path(summary["excel"]).exists() and Path(summary["html"]).exists()
+    assert summary["rows"][0]["evidence_items"]
+    html = Path(summary["html"]).read_text(encoding="utf-8")
+    assert "../../evidence/" in html and "target=\"_blank\"" in html
     print(f"PASS test_end_to_end_collect "
           f"(3工单/3试验/异常{summary['anomalies']}条, 报表已生成)")
 

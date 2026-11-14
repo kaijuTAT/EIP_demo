@@ -1,0 +1,20 @@
+# 运行目标配置。真实 EIP 的地址和入口由现场人员填写，代码不写死域名。
+# 目标机上的数据仍然只在本机浏览器和本地服务之间流转。
+targets:
+  mock:
+    name: 本地 Mock EIP
+    base_url: http://127.0.0.1:8777
+    entry_url: http://127.0.0.1:8777/
+    manual_login: false
+    headless_default: true
+
+  real_eip:
+    name: 真实 EIP（现场填写）
+    base_url: ""
+    entry_url: ""
+    manual_login: true
+    headless_default: false
+    notes: |
+      先人工登录并打开生产试验列表，再运行 run_probe.py 记录真实 JSON 响应。
+      确认接口字段后回填 config/api_map.yaml，确认页面定位后回填
+      config/page_templates.yaml，最后用只读账号运行 run_collect.py。

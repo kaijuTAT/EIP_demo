@@ -36,8 +36,8 @@ playwright install chromium
 python run_demo.py          # → reports/out/异常报表_样例.xlsx/.html
 
 # 2) T1 接口版全链路联调（Mock EIP，本机即可跑）
-python -m mock_eip.server           # 终端1：仿真 EIP（127.0.0.1:8777）
-python run_collect.py --base-url http://127.0.0.1:8777   # 终端2：采集→规则→报表
+python -m mock_eip.server           # 可选：单独启动仿真 EIP（127.0.0.1:8777）
+python run_collect.py --target mock # 采集→规则→报表，目标配置见 config/targets.yaml
 
 # 3) 测试：规则/OCR 回归 + 接口版端到端集成
 python tests/test_rules.py
@@ -45,11 +45,30 @@ python tests/test_ocr_fields.py
 python tests/test_eip_api_version.py
 
 # 4) 正式第一步：D2 流量验证（人工登录 EIP，翻 5~10 个局放详情页）
-python run_probe.py         # 按回车结束，自动输出候选数据接口清单
+python run_probe.py --target real_eip  # 按回车结束，自动输出候选数据接口清单
 
 # 5) 本地管理界面
-python -m app.main          # http://127.0.0.1:8765
+python -m app.main          # http://127.0.0.1:8765，提交任务后后台执行
 ```
+
+## 管理页面任务
+
+打开 `http://127.0.0.1:8765` 后可以选择流量验证、工单采集或规则跑批。
+
+- 选择本地 Mock 目标时，管理页会自动启动 `127.0.0.1:8777` 仿真服务
+- 选择真实 EIP 时，在 `config/targets.yaml` 填写 `base_url` 和 `entry_url`
+- 首次真实采集选择显示浏览器，人工登录后由任务继续采集
+- 任务状态会从 `pending` 变为 `running`、`done` 或 `failed`
+- 同一任务的页面截图、录屏、响应清单和原始 JSON 会放在 `evidence/collect_<时间>/`
+- HTML 报表中的证据名称可以直接打开，Excel 的证据单元格带超链接
+
+真实 EIP 的接入顺序如下。
+
+1. 在 `config/targets.yaml` 填入真实入口地址。
+2. 用 `python run_probe.py` 或管理页的“流量验证”打开浏览器，人工登录并翻看 5 到 10 个局放详情页。
+3. 根据 `evidence/probe_<时间>/manifest.jsonl` 和 `raw/` 中的响应，回填 `config/api_map.yaml`。
+4. 根据页面实际结构回填 `config/page_templates.yaml`。
+5. 用只读账号和少量详情页运行采集，人工复核报表后再扩大范围。
 
 ## T1 接口版：适配 EIP 接口（config/api_map.yaml）
 

@@ -14,10 +14,11 @@ class BrowserSession:
     """同步版会话。with BrowserSession() as s: s.page.goto(...)"""
 
     def __init__(self, headless: bool = False, record_video: bool = False,
-                 profile_dir: Path = None):
+                 profile_dir: Path = None, video_dir: Path = None):
         self.headless = headless
         self.record_video = record_video
         self.profile_dir = profile_dir or PROFILE_DIR
+        self.video_dir = Path(video_dir) if video_dir else None
         self._pw = None
         self.context = None
         self.page = None
@@ -30,7 +31,7 @@ class BrowserSession:
             viewport={"width": 1600, "height": 900},
         )
         if self.record_video:
-            video_dir = Path(__file__).resolve().parents[1] / "evidence" / "videos"
+            video_dir = self.video_dir or Path(__file__).resolve().parents[1] / "evidence" / "videos"
             video_dir.mkdir(parents=True, exist_ok=True)
             kwargs["record_video_dir"] = str(video_dir)
         self.context = self._pw.chromium.launch_persistent_context(**kwargs)
