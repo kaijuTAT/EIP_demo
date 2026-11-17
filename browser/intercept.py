@@ -6,6 +6,7 @@
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from storage.db import now
 
@@ -13,17 +14,23 @@ from storage.db import now
 class ResponseSink:
     """把命中的 JSON 响应写入 out_dir/raw/，并维护 manifest.jsonl。"""
 
-    def __init__(self, out_dir: Path, url_patterns=None):
+    def __init__(self, out_dir: Path, url_patterns=None, origin=None):
         self.out_dir = Path(out_dir)
         self.raw_dir = self.out_dir / "raw"
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.out_dir / "manifest.jsonl"
-        self.url_patterns = [re.compile(p) for p in (url_patterns or [".*"])]
+        self.manifest_path.touch(exist_ok=True)
+        self.origin = urlsplit(origin) if origin else None
+        self.url_patterns = [re.compile(p) for p in ([".*"] if url_patterns is None else url_patterns)]
         self.count = 0
         self.errors = []  # 事件回调里的异常记录（不再静默吞掉）
 
     def match(self, url: str) -> bool:
-        return any(p.search(url) for p in self.url_patterns)
+        parsed = urlsplit(url)
+        if self.origin and (parsed.scheme, parsed.netloc) != (self.origin.scheme, self.origin.netloc):
+            return False
+        return any(p.search(parsed.path) or p.search(parsed._replace(query="", fragment="").geturl())
+                   for p in self.url_patterns)
 
     def save(self, url: str, status: int, body: bytes) -> dict:
         self.count += 1
@@ -64,6 +71,9 @@ def attach(page, sink: ResponseSink, on_body=None):
             if "json" not in ct.lower():
                 return
             if not sink.match(resp.url):
+                return
+            if not 200 <= resp.status < 300:
+                sink.errors.append(f"HTTP {resp.status} {resp.url}")
                 return
             body = resp.body()
             sink.save(resp.url, resp.status, body)

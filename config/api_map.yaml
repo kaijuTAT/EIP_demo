@@ -1,8 +1,7 @@
 # EIP 接口适配配置（T1 通道）
 #
 # 现在填的是本地 Mock EIP 的端点，用于开发与集成测试。
-# D2 流量验证（run_probe.py）拿到真实 EIP 端点后，只改本文件的
-# url_pattern 和字段映射，采集代码一行不用动。
+# 现场确认接口适用范围后，配置 url_pattern、试验键和字段映射。
 #
 # 字段映射语法（极简 JSON 路径）："$.data.productNo"、"$.[0].name"
 
@@ -13,6 +12,7 @@ endpoints:
     url_pattern: "/api/workorders"
     parser: workorder_list
     items_path: "$.data.list"
+    total_path: "$.data.total"
     fields:
       workorder_no: "$.workorderNo"
       project: "$.projectName"
@@ -34,6 +34,7 @@ endpoints:
       voltage_class: "$.data.voltageClass"
       voltage_class_type: "$.data.voltageClassType"
       test_status: "$.data.testStatus"
+      uploaded_at: "$.data.uploadedAt"  # 平台上传时间，缺失时保持空值
     steps:
       items_path: "$.data.steps"
       occurred_at: "$.time"

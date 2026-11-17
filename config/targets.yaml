@@ -12,9 +12,11 @@ targets:
     name: 真实 EIP（现场填写）
     base_url: ""
     entry_url: ""
+    capture_api: false  # 现场确认允许留存并配好业务接口后开启
+    probe_url_patterns: []  # 已获准留存的业务响应 URL 正则
     manual_login: true
     headless_default: false
     notes: |
-      先人工登录并打开生产试验列表，再运行 run_probe.py 记录真实 JSON 响应。
+      先运行 run_probe.py 并人工登录，浏览生产试验列表与详情，核对同源响应概要。
       确认接口字段后回填 config/api_map.yaml，确认页面定位后回填
       config/page_templates.yaml，最后用只读账号运行 run_collect.py。

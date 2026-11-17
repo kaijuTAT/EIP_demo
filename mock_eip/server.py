@@ -75,7 +75,7 @@ def api_trial(key):
     return jsonify({"code": 0, "data": {
         "productNo": t["productNo"], "testNo": t["testNo"],
         "voltageClass": t["voltageClass"], "voltageClassType": t["voltageClassType"],
-        "testStatus": t["testStatus"], "steps": steps,
+        "testStatus": t["testStatus"], "uploadedAt": t.get("uploadedAt"), "steps": steps,
     }})
 
 

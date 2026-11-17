@@ -58,7 +58,7 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="最多进入的详情页数")
     ap.add_argument("--page-wait-ms", type=int, default=1200)
     ap.add_argument("--profile-dir", default="", help="浏览器登录态目录，默认 evidence/browser_profile")
-    ap.add_argument("--headless", dest="headless", action="store_true", default=True)
+    ap.add_argument("--headless", dest="headless", action="store_true", default=None)
     ap.add_argument("--no-headless", dest="headless", action="store_false",
                     help="显示浏览器窗口（真实 EIP 人工登录场景用）")
     args = ap.parse_args()
@@ -66,6 +66,8 @@ def main():
     target = load_target(args.target) if args.target else {}
     base_url = args.base_url or target.get("base_url", "")
     entry_url = args.entry_url or target.get("entry_url", "") or None
+    if args.headless is None:
+        args.headless = target.get("headless_default", True)
     if not base_url:
         ap.error("请提供 --base-url，或在 config/targets.yaml 配置 --target")
     if args.target == "mock":
@@ -75,13 +77,14 @@ def main():
           f"headless={args.headless} limit={args.limit}")
     summary = collect(args.base_url or base_url, limit=args.limit, headless=args.headless,
                       page_wait_ms=args.page_wait_ms, entry_url=entry_url,
-                      profile_dir=profile_dir)
+                      profile_dir=profile_dir, manual_login=target.get("manual_login", False),
+                      capture_api=target.get("capture_api", True))
 
-    print(f"\n工单 {summary['workorders']} 条 | 完整试验 {summary['trials']} 条 | "
-          f"异常判定 {summary['anomalies']} 条")
+    print(f"\n工单 {summary['workorders']} 条 | 已识别试验 {summary['identified_trials']} 条 | 采集不完整 {summary['incomplete']} 条 | "
+          f"异常线索 {summary['anomalies']} 条 | 待复核 {summary['needs_review']} 条")
     for row in summary["rows"]:
-        if not row["ok"]:
-            print(f"  ✗ {row['rule_id']} {row['rule_name']}  {row['product_no']}  {row['detail']}")
+        if row["ok"] is not True:
+            print(f"  {row['verdict']} {row['rule_id']} {row['rule_name']}  {row.get('product_no') or row.get('workorder_no')}  {row['detail']}")
     if summary["unmatched"]:
         print(f"\n未匹配接口（供补充 api_map）：{summary['unmatched']}")
     print(f"\n报表：\n  {summary['excel']}\n  {summary['html']}\n证据目录：{summary['evidence']}")

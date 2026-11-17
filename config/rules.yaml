@@ -1,5 +1,5 @@
 # 异常规则参数（业务可改；改完把 version 加一位）
-version: "2026-11-13.1"
+version: "2026-11-18.1"
 
 # 按电压等级的试验参数。U0 与倍率来自 EIP 步骤文案实测：
 # 26/35kV 交流：2U0=52kV 维持10s → 1.73U0=44.98kV → 耐压 4.5U0=117kV
@@ -22,13 +22,23 @@ step_chain_keywords:
   - 试验采集开始
   - 局放背景值采集完成
   - 开始进行局放试验
-  - 52            # 2U0 出现在步骤文案中
-  - 维持10秒
+  - 维持
   - 降压
   - 采集局放值
   - 局放值采集完成
   - 开始进行耐压试验
-  - 完成
+  - 试验状态:完成
+
+# 步骤文字及阈值均为试点配置。上线前按物资规范与业务人员核对。
+phase_markers:
+  background_start: 开始采集局放背景值
+  background_end: 局放背景值采集完成
+  pd_start: 开始进行局放试验
+  drop: 降压到
+  read_start: 采集局放值
+  read_end: 局放值采集完成
+  withstand: 开始进行耐压试验
+  finished: 试验状态:完成
 
 rules:
   R-PD-01:
@@ -36,6 +46,7 @@ rules:
     severity: high
     enabled: true
   R-PD-02:
+    max_sample_gap_seconds: 5
     name: 局放升压目标偏差
     severity: high
     enabled: true
@@ -44,18 +55,22 @@ rules:
     name: 平台维持时间不足
     severity: high
     enabled: true
+    max_sample_gap_seconds: 5  # 超过此采样间隔不能证明平台连续
     tolerance: 0.05        # 判定"在平台上"的电压容差
   R-PD-04:
+    marker_slack_seconds: 3    # 就近核对到达降压目标的读数
     name: 降压目标偏差
     severity: medium
     enabled: true
     tolerance: 0.02
   R-PD-05:
+    max_sample_gap_seconds: 5
     name: 耐压目标未达成
     severity: high
     enabled: true
     tolerance: 0.02
   R-PD-06:
+    max_sample_gap_seconds: 5  # 包括采值窗口首尾，缺测时进入复核
     name: 局放量超限
     severity: high
     enabled: true
@@ -74,4 +89,4 @@ rules:
   R-TS-01:
     name: 数据上传时效
     severity: medium
-    enabled: false         # 待物资收货数据接入后启用
+    enabled: true          # 在单独的本地收货台账核对任务中运行

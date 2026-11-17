@@ -5,14 +5,18 @@
 OCR 常见噪声：冒号丢失（191051）、KV-/PC- 变体、全角字符。
 """
 import re
+import unicodedata
 from datetime import datetime
 
 # "2025-08-1919:10:51" / "2025.08-1919:10.51" / "2025-08-19 19:10:51"
 TS_RE = re.compile(
     r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?\s*(\d{1,2})[:.时](\d{2})[:.分\-]?(\d{2})?"
 )
-KV_RE = re.compile(r"[kK][vV][:\-—]?\s*(\d{1,3}[.,]\d{1,2}|\d{1,3})", re.I)
-PC_RE = re.compile(r"[pP][cC][:\-—]?\s*(\d{1,4}[.,]\d{1,2}|\d{1,4})", re.I)
+VALUE = r"(\d+(?:[.,]\d+)?)"
+KV_RE = re.compile(r"kv\s*[:\-—]?\s*" + VALUE, re.I)
+PC_RE = re.compile(r"pc\s*[:\-—]?\s*" + VALUE, re.I)
+KV_SUFFIX = re.compile(r"(?<![\d:.,])" + VALUE + r"\s*kv\b", re.I)
+PC_SUFFIX = re.compile(r"(?<![\d:.,])" + VALUE + r"\s*pc\b", re.I)
 
 
 def _num(s: str) -> float:
@@ -34,24 +38,31 @@ def parse_timestamp(text: str):
 
 
 def parse_kv(text: str):
-    m = KV_RE.search(text)
+    text = unicodedata.normalize("NFKC", text)
+    m = KV_RE.search(text) or KV_SUFFIX.search(text)
     return _num(m.group(1)) if m else None
 
 
 def parse_pc(text: str):
-    m = PC_RE.search(text)
+    text = unicodedata.normalize("NFKC", text)
+    m = PC_RE.search(text) or PC_SUFFIX.search(text)
     return _num(m.group(1)) if m else None
 
 
 def parse_tooltip(lines: list):
     """悬浮框多行 OCR → {'ts','kv','pc'}。lines: [(text, score)] 或 [str]。"""
-    joined = " ".join(x[0] if isinstance(x, (tuple, list)) else x for x in lines)
-    return {
-        "ts": parse_timestamp(joined),
-        "kv": parse_kv(joined),
-        "pc": parse_pc(joined),
-        "raw": joined.strip(),
-    }
+    texts = [x[0] if isinstance(x, (tuple, list)) else x for x in lines]
+    joined = " ".join(texts)
+
+    def field(parser):
+        for line in texts:
+            value = parser(line)
+            if value is not None:
+                return value
+        return parser(joined)
+
+    return {"ts": field(parse_timestamp), "kv": field(parse_kv), "pc": field(parse_pc),
+            "raw": joined.strip()}
 
 
 def parse_step_line(text: str):

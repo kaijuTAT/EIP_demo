@@ -1,8 +1,4 @@
-"""试验感知详情页（成盘局放耐压试验）解析。
-
-定位器来自 config/page_templates.yaml。selector 未回填时抛 TemplateNotReady，
-采集暂停转人工——绝不在模板缺失时猜字段写脏数据。
-"""
+"""读取当前试验详情中已配置的可见字段与步骤。"""
 from pathlib import Path
 
 import yaml
@@ -13,47 +9,39 @@ TEMPLATES = Path(__file__).resolve().parents[2] / "config" / "page_templates.yam
 
 
 class TemplateNotReady(Exception):
-    """页面模板未回填（等 D2 验证）。调用方应暂停任务并提示人工。"""
+    """当前页面或业务定位器无法确认。"""
 
 
-def load_templates() -> dict:
-    with open(TEMPLATES, encoding="utf-8") as f:
+def load_templates():
+    with TEMPLATES.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def _sel(tpl: dict, field: str) -> str:
-    s = tpl["trial_detail"]["fields"].get(field, {}).get("selector", "")
-    if not s:
-        raise TemplateNotReady(f"trial_detail.fields.{field} 未回填，请先完成 D2 验证")
-    return s
-
-
-def read_trial_info(page) -> dict:
-    """DOM 直读试验信息栏字段（T2 通道）。"""
-    tpl = load_templates()
+def read_trial_info(page, config=None):
+    config = config if config is not None else load_templates()["trial_detail"]
     out = {}
-    for field in tpl["trial_detail"]["fields"]:
-        try:
-            out[field] = page.locator(_sel(tpl, field)).first.inner_text(timeout=3000).strip()
-        except TemplateNotReady:
-            raise
-        except Exception:
-            out[field] = None
+    for name, field in config.get("fields", {}).items():
+        if not field.get("selector"):
+            continue
+        element = page.locator(field["selector"]).first
+        if element.count() and element.is_visible():
+            attr = field.get("attr", "text")
+            value = element.inner_text() if attr == "text" else element.get_attribute(attr)
+            if value:
+                out[name] = value.strip()
     return out
 
 
-def read_steps(page) -> list:
-    """步骤时间线：DOM 行内自带时间戳，直接解析成 [(occurred_at, text)]。"""
-    tpl = load_templates()
-    sel = tpl["trial_detail"]["steps"].get("selector", "")
-    if not sel:
-        raise TemplateNotReady("trial_detail.steps.selector 未回填，请先完成 D2 验证")
-    lines = [l.strip() for l in page.locator(sel).all_inner_texts() if l.strip()]
-    return parse_step_lines(lines)
+def read_steps(page, config=None):
+    config = config if config is not None else load_templates()["trial_detail"]
+    selector = config.get("steps", {}).get("selector")
+    if not selector:
+        return []
+    return parse_step_lines(page.locator(selector).all_inner_texts())
 
 
-def save_page_screenshot(page, evidence_dir: Path, name: str = "detail.png") -> Path:
+def save_page_screenshot(page, evidence_dir: Path, name="detail.png"):
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    p = evidence_dir / name
-    page.screenshot(path=str(p), full_page=True)
-    return p
+    path = evidence_dir / name
+    page.screenshot(path=str(path), full_page=True)
+    return path

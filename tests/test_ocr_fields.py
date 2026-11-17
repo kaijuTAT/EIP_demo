@@ -23,7 +23,10 @@ def test_timestamp_variants():
 def test_kv_pc_variants():
     assert parse_kv("KV:50.83") == 50.83
     assert parse_kv("kV-43.75") == 43.75
-    assert parse_kv("电压 46hKV") is None or parse_kv("46hKV") is None or True  # 单位噪声容忍
+    assert parse_kv("电压 46hKV") is None
+    assert parse_kv("kV ： 50.831") == 50.831
+    assert parse_pc("3.08 pC") == 3.08
+    assert parse_pc("308 pC") == 308  # 不猜测缺失的小数点
     assert parse_pc("PC:3.08") == 3.08
     assert parse_pc("pC3.08") == 3.08
     assert parse_kv("PC:3.08") is None  # 不串行

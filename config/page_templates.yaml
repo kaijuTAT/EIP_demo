@@ -26,6 +26,9 @@ trial_detail:                     # 智能监造 → 试验感知详情（成盘
   curve:
     container: ""                 # TODO(D2): 曲线容器（canvas 或 echarts div）
     tooltip: ""                   # TODO(D2): 悬浮框，实测显示 时间 + KV:xx + pC:xx
+    samples: 60
+    dwell_ms: 200
+    min_confidence: 0.90
     plot_area:                    # hover 采样的坐标范围（D2 实测后回填）
       x0: 0
       x1: 0
@@ -42,6 +45,7 @@ workorder_list:                   # 生产试验列表页
     plan_delivery_date: ""
     progress: ""
     alarm_detail: ""
+  detail_link: ""                 # 行内详情链接的选择器，读取 href
   pager:
     next_button: ""               # TODO(D2)
     max_pages: 200                # 安全上限，防失控翻页

@@ -6,6 +6,8 @@ __pycache__/
 
 # 本地数据与生成物（含演示/试跑数据，不入库）
 *.db
+*.db-wal
+*.db-shm
 reports/out/
 
 # 证据目录整体不入库：截图/录屏/原始JSON/浏览器profile 均可能含内网页面数据

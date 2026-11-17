@@ -6,6 +6,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from rules.engine import VERDICTS
 from reports.evidence import expand_evidence, relative_evidence_path
 
 HEAD_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -13,8 +14,10 @@ HEAD_FONT = Font(color="FFFFFF", bold=True)
 FAIL_FILL = PatternFill("solid", fgColor="FFC7CE")
 
 COLUMNS = [
-    ("trial_id", "试验ID", 8), ("product_no", "成品编号", 18), ("test_no", "试验编号", 20),
+    ("workorder_no", "生产工单", 20), ("batch_no", "批次号", 16), ("trial_id", "试验ID", 8), ("product_no", "成品编号", 18), ("test_no", "试验编号", 20),
     ("voltage_class", "电压等级", 10), ("rule_id", "规则编号", 10), ("rule_name", "异常类型", 18),
+    ("rule_version", "规则版本", 18), ("verdict", "判定", 12),
+    ("window_start", "起始时刻", 22), ("window_end", "结束时刻", 22),
     ("severity", "严重度", 8), ("detail", "判定依据", 46), ("review_status", "复核状态", 10),
     ("review_note", "复核意见", 16), ("evidence", "证据链接", 30),
 ]
@@ -38,9 +41,13 @@ def write_anomaly_excel(rows: list, out_path: Path, sheet_name: str = "异常清
     for r, row in enumerate(rows, 2):
         for i, (key, _, _) in enumerate(COLUMNS, 1):
             val = row.get(key, "")
+            if key == "verdict":
+                val = VERDICTS[row.get("ok")]
             if key == "detail" and isinstance(val, dict):
                 val = "; ".join(f"{k}={v}" for k, v in val.items())
             c = ws.cell(row=r, column=i, value=val)
+            if isinstance(val, str):
+                c.data_type = "s"
             c.alignment = Alignment(vertical="top", wrap_text=(key == "detail"))
             if key == "evidence":
                 items = expand_evidence(row.get("evidence_items") or val)
@@ -57,5 +64,7 @@ def write_anomaly_excel(rows: list, out_path: Path, sheet_name: str = "异常清
                         )
             if row.get("ok") is False:
                 c.fill = FAIL_FILL
+            elif row.get("ok") is None:
+                c.fill = PatternFill("solid", fgColor="FFF2CC")
     wb.save(out_path)
     return out_path

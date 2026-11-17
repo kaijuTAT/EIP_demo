@@ -1,218 +1,263 @@
-"""规则引擎：数值判定只走规则，不走大模型。
-
-输入：trial 字段、步骤时间线、曲线点序列
-输出：[{rule_id, rule_name, severity, ok, detail}]，ok=False 即异常记录
-规则参数全部来自 config/rules.yaml（业务可改、版本化）。
-"""
-from datetime import datetime
+"""在步骤定义的时间段内校核实测曲线。ok 为 True、False 或 None（数据不足）。"""
+from datetime import datetime, timedelta, timezone
+from math import isfinite
 from pathlib import Path
 
 import yaml
 
+from ocr.fields import normalize_for_chain
+
 RULES_FILE = Path(__file__).resolve().parents[1] / "config" / "rules.yaml"
+VERDICTS = {True: "通过", False: "异常线索", None: "待复核"}
 
 
-def load_rules() -> dict:
-    with open(RULES_FILE, encoding="utf-8") as f:
+def load_rules():
+    with RULES_FILE.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def _targets(voltage_class: str, cfg: dict) -> dict:
-    vc = cfg["voltage_classes"].get(str(voltage_class)) or cfg["voltage_classes"]["26/35"]
-    return {
-        "pd": vc["u0"] * vc["mult_pd"],            # 52.0
-        "after_hold": vc["u0"] * vc["mult_hold"],  # 44.98
-        "withstand": vc["u0"] * vc["mult_withstand"],  # 117.0
-        "hold_seconds": vc["hold_seconds"],
-        "vc_cfg": vc,
-    }
-
-
-def _ts(s):
-    """容错解析时间戳：OCR 噪声/非法格式返回 None 而不是崩。"""
-    if not s:
+def timestamp(value):
+    """EIP 业务时间。显式时区换算为北京时间，无时区的值按页面时间读取。"""
+    if not isinstance(value, str) or len(value.strip()) <= 10:
         return None
     try:
-        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError):
+        t = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    return t
+
+
+def number(value):
+    try:
+        n = float(value)
+        return n if isfinite(n) and not isinstance(value, bool) else None
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
-def _span_seconds(points):
-    """点序列首尾时间差（秒）；可解析时间戳不足 2 个返回 0。"""
-    ts = [t for t in (_ts(p.get("ts")) for p in points) if t]
-    if len(ts) < 2:
-        return 0.0
-    return (ts[-1] - ts[0]).total_seconds()
+def _stamp(t):
+    return t.isoformat(sep=" ") if t is not None else ""
 
 
-def _longest_plateau(curve, target, tol):
-    """距 target 容差内的最长连续段（按点数）。curve 已按时间排序。"""
-    best = cur = 0
-    for p in curve:
-        kv = p.get("kv")
-        if kv is not None and abs(kv - target) / target <= tol:
-            cur += 1
-            best = max(best, cur)
-        else:
-            cur = 0
-    return best
-
-
-def check_step_chain(steps, cfg):
-    """R-PD-01：步骤关键词按顺序齐全（归一化后匹配，容忍 OCR 噪声）。
-    顺序用"从当前位置向后找"的游标法，避免后面的关键词在前文提前命中
-    （如'完成'出现在'背景值采集完成'里）。"""
-    from ocr.fields import normalize_for_chain
-    text = normalize_for_chain(" ".join(t for _, t in steps))
-    missing, order_break = [], []
-    pos = 0
-    for kw in cfg["step_chain_keywords"]:
-        nk = normalize_for_chain(kw)
-        i = text.find(nk, pos)
-        if i < 0:
-            missing.append(kw)
-        else:
-            pos = i + len(nk)
-    ok = not missing
-    return ok, {"missing_keywords": missing}
-
-
-def _phase_stats(curve, targets):
-    """按试验逻辑分段取极值：
-    pd_peak   = 耐压上升（>0.6倍耐压目标）之前的最大电压（局放升压段峰值）
-    valley    = 首次到达 2U0 平台之后的最低电压（降压段谷值）
-    w_peak    = 全程最大电压（耐压峰值，耐压是全程最高）
-    """
-    pts = [(p.get("ts"), p["kv"]) for p in curve if p.get("kv") is not None]
-    if not pts:
-        return None, None, None
-    w_rise = 0.6 * targets["withstand"]
-    idx_w = next((i for i, (_, kv) in enumerate(pts) if kv > w_rise), len(pts))
-    pd_peak = max(kv for _, kv in pts[:idx_w])
-    idx_p = next((i for i, (_, kv) in enumerate(pts)
-                  if abs(kv - targets["pd"]) / targets["pd"] <= 0.05), None)
-    valley = (min(kv for i, (_, kv) in enumerate(pts) if i > idx_p)
-              if idx_p is not None else None)
-    w_peak = max(kv for _, kv in pts)
-    return pd_peak, valley, w_peak
-
-
-def check_voltage_targets(curve, targets, rules_cfg):
-    """R-PD-02/04/05：升压、降压、耐压三阶段实测极值与目标偏差。"""
-    pd_peak, valley, w_peak = _phase_stats(curve, targets)
-    if pd_peak is None:
-        return []
-    out = []
-    for rid, target, reached in (("R-PD-02", targets["pd"], pd_peak),
-                                 ("R-PD-04", targets["after_hold"], valley),
-                                 ("R-PD-05", targets["withstand"], w_peak)):
-        rc = rules_cfg["rules"][rid]
-        if not rc.get("enabled", True) or reached is None:
-            if rc.get("enabled", True):
-                out.append((rid, rc, False,
-                            {"target_kv": target, "reached_kv": None, "note": "曲线数据缺失"}))
+def _samples(curve):
+    # 相同时间的重复读数只计一次。互相矛盾的同一时刻读数交给人工复核。
+    samples = {}
+    invalid_times = 0
+    for point in curve:
+        t = timestamp(point.get("ts"))
+        if t is None:
+            invalid_times += 1
             continue
-        tol = float(rc["tolerance"])
-        dev = (reached - target) / target
-        out.append((rid, rc, abs(dev) <= tol,
-                    {"target_kv": target, "reached_kv": reached, "deviation": round(dev, 4)}))
-    return out
-
-
-def check_hold_duration(curve, targets, rules_cfg):
-    """R-PD-03：2U0 平台维持时长。采样点带时间戳时按时间差算，否则按点数*间隔估。"""
-    rc = rules_cfg["rules"]["R-PD-03"]
-    if not rc.get("enabled", True):
-        return None
-    tol = float(rc["tolerance"])
-    on_pl = [p for p in curve if p.get("kv") is not None
-             and abs(p["kv"] - targets["pd"]) / targets["pd"] <= tol]
-    dur = _span_seconds(on_pl)
-    min_s = float(targets["hold_seconds"])
-    return ("R-PD-03", rc, dur >= min_s,
-            {"duration_s": dur, "required_s": min_s, "points_on_plateau": len(on_pl)})
-
-
-def check_pd_limit(curve, rules_cfg, phase="steady"):
-    """R-PD-06：稳态局放超限。稳态取采样后半段均值（试点近似）。"""
-    rc = rules_cfg["rules"]["R-PD-06"]
-    if not rc.get("enabled", True):
-        return None
-    pcs = [p["pc"] for p in curve if p.get("pc") is not None]
-    if not pcs:
-        return ("R-PD-06", rc, True, {"note": "无局放数据，跳过"})
-    steady = pcs[len(pcs) // 2:]
-    avg = sum(steady) / len(steady)
-    limit = float(rc["pc_limit"])
-    return ("R-PD-06", rc, avg <= limit,
-            {"steady_avg_pc": round(avg, 2), "limit_pc": limit, "max_pc": max(pcs)})
-
-
-def check_background(curve, rules_cfg):
-    """R-PD-07：背景局放值合理性。好电缆稳态≈背景属正常；
-    可疑条件：背景噪声底超限，或稳态明显低于背景（物理上不可能，数据可疑）。"""
-    rc = rules_cfg["rules"]["R-PD-07"]
-    if not rc.get("enabled", True):
-        return None
-    pcs = [p["pc"] for p in curve if p.get("pc") is not None]
-    if len(pcs) < 4:
-        return ("R-PD-07", rc, True, {"note": "点数不足，跳过"})
-    bg = sum(pcs[: len(pcs) // 2]) / (len(pcs) // 2)
-    steady = sum(pcs[len(pcs) // 2:]) / (len(pcs) - len(pcs) // 2)
-    limit = float(rc["pc_limit"])
-    ok = bg <= limit and steady >= bg * 0.9
-    return ("R-PD-07", rc, ok,
-            {"background_pc": round(bg, 2), "steady_pc": round(steady, 2)})
-
-
-def check_curve_shape(curve, rules_cfg):
-    """R-PD-08：数据死点（连续相同读数）与采样缺口。"""
-    rc = rules_cfg["rules"]["R-PD-08"]
-    if not rc.get("enabled", True):
-        return None
-    stuck_max, gap_max = int(rc["stuck_max_points"]), float(rc["gap_seconds"])
-    stuck = cur = 1
-    prev = None
-    for p in curve:
-        kv = p.get("kv")
-        if kv is not None and prev is not None and kv == prev:
-            cur += 1
-            stuck = max(stuck, cur)
+        values = {key: number(point.get(key)) for key in ("kv", "pc")}
+        if t in samples:
+            for key, value in values.items():
+                if value != samples[t][key]:
+                    samples[t][key] = None
         else:
-            cur = 1
-        prev = kv
-    biggest_gap = 0.0
-    tss = [t for t in (_ts(p.get("ts")) for p in curve) if t]
-    for a, b in zip(tss, tss[1:]):
-        biggest_gap = max(biggest_gap, (b - a).total_seconds())
-    ok = stuck <= stuck_max and biggest_gap <= gap_max
-    return ("R-PD-08", rc, ok,
-            {"max_stuck_points": stuck, "max_gap_s": biggest_gap})
+            samples[t] = values
+    return [(t, samples[t]) for t in sorted(samples)], invalid_times
 
 
-def run_all(trial: dict, steps: list, curve: list, rules_cfg: dict = None) -> list:
-    """主入口。trial 需含 voltage_class；steps [(occ,text)]；curve [{ts,kv,pc}]。"""
+def _timeline(steps):
+    events = [(timestamp(ts), normalize_for_chain(text)) for ts, text in steps if text]
+    return sorted((t, text) for t, text in events if t is not None), len(events)
+
+
+def _event(events, keyword):
+    return next((t for t, text in events if keyword in text), None)
+
+
+def _between(points, start, end):
+    if start is None or end is None or end < start:
+        return []
+    return [(t, v) for t, v in points if start <= t <= end]
+
+
+def _result(cfg, rid, ok, detail, start=None, end=None):
+    rc = cfg["rules"][rid]
+    return dict(rule_id=rid, rule_name=rc["name"], severity=rc["severity"],
+                rule_version=cfg["version"], ok=ok, verdict=VERDICTS[ok],
+                window_start=_stamp(start), window_end=_stamp(end), detail=detail)
+
+
+def _coverage(rows, field, minimum=2):
+    return len(rows) >= minimum and all(v[field] is not None for _, v in rows)
+
+
+def _peak(rows, target, rc, start, end):
+    if not rows or target is None or not _coverage(rows, "kv"):
+        return None, {"note": "缺少等级、阶段边界或有效电压采样"}
+    t, v = max(rows, key=lambda row: row[1]["kv"])
+    actual = v["kv"]
+    detail = {"target_kv": target, "reached_kv": actual, "point_time": _stamp(t)}
+    tolerance = rc["tolerance"] * target
+    if actual < target - tolerance:
+        times = [start, *(t for t, _ in rows), end]
+        gap = max((b - a).total_seconds() for a, b in zip(times, times[1:]))
+        if gap > rc.get("max_sample_gap_seconds", 5):
+            return None, {**detail, "max_gap_s": gap, "note": "未观测到目标峰值，阶段采样覆盖不足"}
+    return abs(actual - target) <= tolerance, detail
+
+
+def _hold(rows, target, seconds, rc, window_start, window_end):
+    if target is None or len(rows) < 2:
+        return None, {"note": "缺少可定位的平台段或电压采样"}
+    gap_limit = float(rc.get("max_sample_gap_seconds", 5))
+    best_seconds, best_start, best_end = 0.0, None, None
+    start = previous = None
+    uncertain = ((rows[0][0] - window_start).total_seconds() > gap_limit or
+                 (window_end - rows[-1][0]).total_seconds() > gap_limit)
+    for t, v in rows:
+        if previous is not None and (t - previous).total_seconds() > gap_limit:
+            start = None
+            uncertain = True
+        previous = t
+        kv = v["kv"]
+        if kv is None or abs(kv - target) > rc["tolerance"] * target:
+            start = None
+            uncertain |= kv is None
+            continue
+        if start is None:
+            start = t
+        duration = (t - start).total_seconds()
+        if best_start is None or duration > best_seconds:
+            best_seconds, best_start, best_end = duration, start, t
+    detail = {"duration_s": best_seconds, "required_s": seconds,
+              "segment_start": _stamp(best_start), "segment_end": _stamp(best_end)}
+    if best_seconds >= seconds:
+        return True, detail
+    if uncertain:
+        return None, {**detail, "note": "采样有缺口，无法确认连续保持时长"}
+    return False, detail
+
+
+def _drop(rows, stable, marker, target, rc):
+    if marker is None or target is None:
+        return None, {"note": "缺少降压完成时刻或电压等级"}
+    near = [(t, v["kv"]) for t, v in rows if v["kv"] is not None
+            and abs((t - marker).total_seconds()) <= rc.get("marker_slack_seconds", 3)]
+    if not near:
+        return None, {"note": "降压完成时刻附近没有有效电压"}
+    t, kv = min(near, key=lambda item: abs((item[0] - marker).total_seconds()))
+    detail = {"target_kv": target, "reached_kv": kv, "point_time": _stamp(t)}
+    if abs(kv - target) > target * rc["tolerance"]:
+        return False, detail
+    excursions = [(t, v["kv"]) for t, v in stable if v["kv"] is not None
+                  and abs(v["kv"] - target) > target * rc["tolerance"]]
+    if excursions:
+        t, kv = max(excursions, key=lambda item: abs(item[1] - target))
+        return None, {**detail, "excursion_kv": kv, "point_time": _stamp(t),
+                      "note": "已达到降压目标，采值时段出现偏移，持续口径待复核"}
+    if not _coverage(stable, "kv"):
+        return None, {**detail, "note": "采值时段电压采样不足"}
+    return True, detail
+
+
+def _pd(rows, limit, start, end, max_gap):
+    if not _coverage(rows, "pc"):
+        return None, {"note": "采集局放值时段数据不足"}
+    t, v = max(rows, key=lambda row: row[1]["pc"])
+    readings = [v["pc"] for _, v in rows]
+    detail = {"limit_pc": limit, "max_pc": v["pc"], "point_time": _stamp(t),
+              "steady_avg_pc": round(sum(readings) / len(readings), 2)}
+    times = [start, *(t for t, _ in rows), end]
+    gap = max((b - a).total_seconds() for a, b in zip(times, times[1:]))
+    if gap > max_gap:
+        return None, {**detail, "max_gap_s": gap, "note": "采值时段覆盖不足"}
+    if max(readings) <= limit:
+        return True, detail
+    if min(readings) > limit:
+        return False, detail
+    return None, {**detail, "note": "时段内有局放越限点，需复核持续时间"}
+
+
+def _background(bg, stable, limit):
+    if not _coverage(bg, "pc") or not _coverage(stable, "pc"):
+        return None, {"note": "缺少背景或采值时段的有效局放量"}
+    background = sum(v["pc"] for _, v in bg) / len(bg)
+    steady = sum(v["pc"] for _, v in stable) / len(stable)
+    return background <= limit and steady >= background * 0.9, {
+        "background_pc": round(background, 2), "steady_pc": round(steady, 2)}
+
+
+def _shape(points, invalid_times, rc):
+    if len(points) < 2:
+        return None, {"note": "有效时刻不足"}
+    stuck = run = 0
+    previous_t = previous_kv = None
+    gap = 0.0
+    gap_at = stuck_at = None
+    for t, v in points:
+        if previous_t is not None:
+            delta = (t - previous_t).total_seconds()
+            if delta > gap:
+                gap, gap_at = delta, t
+        kv = v["kv"]
+        run = run + 1 if kv is not None and kv == previous_kv else int(kv is not None)
+        if run > stuck:
+            stuck, stuck_at = run, t
+        previous_t, previous_kv = t, kv
+    detail = {"max_stuck_points": stuck, "max_gap_s": gap}
+    if gap > rc["gap_seconds"] or stuck > rc["stuck_max_points"]:
+        return False, {**detail, "point_time": _stamp(gap_at if gap > rc["gap_seconds"] else stuck_at)}
+    if invalid_times or not _coverage(points, "kv"):
+        return None, {**detail, "note": "存在无效时间或电压"}
+    return True, detail
+
+
+def run_all(trial, steps, curve, rules_cfg=None):
     cfg = rules_cfg or load_rules()
-    targets = _targets(trial.get("voltage_class"), cfg)
+    rules = cfg["rules"]
+    vc = cfg["voltage_classes"].get(str(trial.get("voltage_class", "")).strip())
+    points, invalid_times = _samples(curve)
+    events, total_events = _timeline(steps)
+    anchors = {k: _event(events, keyword) for k, keyword in cfg["phase_markers"].items()}
+    begin, drop = anchors["pd_start"], anchors["drop"]
+    stable, end = anchors["read_start"], anchors["read_end"]
+    withstand, finish = anchors["withstand"], anchors["finished"]
+    bg_start, bg_end = anchors["background_start"], anchors["background_end"]
+    rising = _between(points, begin, drop)
+    steady = _between(points, stable, end)
+    pd_target = vc["u0"] * vc["mult_pd"] if vc else None
     results = []
 
-    rc01 = cfg["rules"]["R-PD-01"]
-    if rc01.get("enabled", True):
-        ok, detail = check_step_chain(steps, cfg)
-        results.append(dict(rule_id="R-PD-01", rule_name=rc01["name"],
-                            severity=rc01["severity"], ok=ok, detail=detail))
+    def add(rid, outcome, start=None, stop=None):
+        if rules[rid].get("enabled", True):
+            ok, detail = outcome
+            if invalid_times and (ok is True and rid != "R-PD-01" or rid == "R-PD-03" and ok is False):
+                ok, detail = None, {**detail, "note": "存在无法定位时段的曲线采样"}
+            results.append(_result(cfg, rid, ok, detail, start, stop))
 
-    for rid, rc, ok, detail in check_voltage_targets(curve, targets, cfg):
-        results.append(dict(rule_id=rid, rule_name=rc["name"],
-                            severity=rc["severity"], ok=ok, detail=detail))
-
-    for checker in (check_hold_duration, lambda c, t, r: check_pd_limit(c, r),
-                    lambda c, t, r: check_background(c, r),
-                    lambda c, t, r: check_curve_shape(c, r)):
-        r = checker(curve, targets, cfg)
-        if r is not None:
-            rid, rc, ok, detail = r
-            results.append(dict(rule_id=rid, rule_name=rc["name"],
-                                severity=rc["severity"], ok=ok, detail=detail))
+    text = " ".join(s for _, s in events)
+    missing = []
+    pos = 0
+    for keyword in cfg["step_chain_keywords"]:
+        keyword = normalize_for_chain(keyword)
+        i = text.find(keyword, pos)
+        if i < 0:
+            missing.append(keyword)
+        else:
+            pos = i + len(keyword)
+    chain_ok = not missing if events and len(events) == total_events else None
+    if missing and finish is None and trial.get("test_status") not in ("完成", "已完成"):
+        chain_ok = None
+    add("R-PD-01", (chain_ok, {"missing_keywords": missing}), events[0][0] if events else None, finish)
+    add("R-PD-02", _peak(rising, pd_target, rules["R-PD-02"], begin, drop), begin, drop)
+    add("R-PD-03", _hold(rising, pd_target, vc["hold_seconds"] if vc else None, rules["R-PD-03"], begin, drop), begin, drop)
+    drop_target = vc["u0"] * vc["mult_hold"] if vc else None
+    add("R-PD-04", _drop(_between(points, drop, end), steady, stable, drop_target, rules["R-PD-04"]), drop, end)
+    w_target = vc["u0"] * vc["mult_withstand"] if vc else None
+    add("R-PD-05", _peak(_between(points, withstand, finish), w_target, rules["R-PD-05"], withstand, finish), withstand, finish)
+    pc = bg = (None, {"note": "缺少该等级对应的局放规则"})
+    if vc:
+        pc = _pd(steady, vc.get("pc_limit", rules["R-PD-06"]["pc_limit"]), stable, end,
+                 rules["R-PD-06"].get("max_sample_gap_seconds", 5))
+        bg = _background(_between(points, bg_start, bg_end), steady,
+                         vc.get("background_pc_limit", rules["R-PD-07"]["pc_limit"]))
+    add("R-PD-06", pc, stable, end)
+    add("R-PD-07", bg, bg_start, bg_end)
+    add("R-PD-08", _shape(points, invalid_times, rules["R-PD-08"]),
+        points[0][0] if points else None, points[-1][0] if points else None)
     return results
